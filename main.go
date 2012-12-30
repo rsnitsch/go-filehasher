@@ -9,34 +9,39 @@ import (
 var _ = time.Second
 
 func main() {
-	if len(os.Args) != 2 {
+	if len(os.Args) <= 1 {
 		log.Fatalf("Usage: hasher <file>")
 		return
 	}
 
-	file := os.Args[1]
-
-	hasher, err := NewFileHasher(file)
+	hasher, err := NewFileHasher()
 	if err != nil {
 		log.Fatalf("File hasher could not be created: " + err.Error())
 		return
 	}
 
-	hasher.Go()
+	hasher.Start()
 
-	/*
-		go func() {
-			for i := 0; i < 2; i++ {
-				time.Sleep(3 * time.Second)
-				hasher.TogglePause <- true
-			}
-		}()
-	*/
-
-	hash, ok := <-hasher.Result
-	if !ok {
-		log.Fatalf("Hashing failed: " + hasher.Err.Error())
+	for i := 1; i < len(os.Args); i++ {
+		hasher.Request(os.Args[i])
 	}
 
-	log.Printf("Hash is: %x", hash)
+	go func() {
+		for i := 0; i < 2; i++ {
+			time.Sleep(200 * time.Millisecond)
+			hasher.Pause()
+			time.Sleep(200 * time.Millisecond)
+			hasher.Resume()
+		}
+	}()
+
+	for i := 1; i < len(os.Args); i++ {
+		result := hasher.GetResult()
+		if (*result).Err != nil {
+			log.Fatalf("Hashing failed: " + result.Err.Error())
+			return
+		}
+
+		log.Printf("Hash is: %x", result.Hash)
+	}
 }
