@@ -27,15 +27,6 @@ func main() {
 		hasher.Request(os.Args[i])
 	}
 
-	go func() {
-		for i := 0; i < 2; i++ {
-			time.Sleep(200 * time.Millisecond)
-			hasher.Pause()
-			time.Sleep(200 * time.Millisecond)
-			hasher.Resume()
-		}
-	}()
-
 	for i := 1; i < len(os.Args); i++ {
 		result := hasher.GetResult()
 		if (*result).Err != nil {
