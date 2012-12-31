@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/rsnitsch/filehasher"
 	"log"
 	"os"
 	"time"
@@ -14,7 +15,7 @@ func main() {
 		return
 	}
 
-	hasher, err := NewFileHasher()
+	hasher, err := filehasher.NewFileHasher()
 	if err != nil {
 		log.Fatalf("File hasher could not be created: " + err.Error())
 		return
