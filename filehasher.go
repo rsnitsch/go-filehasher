@@ -20,17 +20,10 @@ type FileHasher struct {
 	in                chan string
 	out               chan *Result
 	isRunning         bool
-	workerIn          []chan string
-	workerControl     []chan int
+	workers           []*worker
 	dispatcherControl chan int
 	Err               error
 }
-
-const (
-	workerPause = iota
-	workerResume
-	workerAbort
-)
 
 const (
 	dispatcherPause = iota
@@ -42,8 +35,7 @@ func NewFileHasher() (f *FileHasher, err error) {
 	f = new(FileHasher)
 	f.in = make(chan string)
 	f.out = make(chan *Result)
-	f.workerIn = make([]chan string, 0)
-	f.workerControl = make([]chan int, 0)
+	f.workers = make([]*worker, 0)
 	f.dispatcherControl = make(chan int)
 
 	return f, nil
@@ -66,9 +58,9 @@ func (f *FileHasher) Pause() {
 		f.dispatcherControl <- dispatcherPause
 	}()
 
-	for _, workerControl := range f.workerControl {
+	for _, worker := range f.workers {
 		go func() {
-			workerControl <- workerPause
+			worker.Pause()
 		}()
 	}
 }
@@ -78,9 +70,9 @@ func (f *FileHasher) Resume() {
 		f.dispatcherControl <- dispatcherResume
 	}()
 
-	for _, workerControl := range f.workerControl {
+	for _, worker := range f.workers {
 		go func() {
-			workerControl <- workerResume
+			worker.Resume()
 		}()
 	}
 }
@@ -90,9 +82,9 @@ func (f *FileHasher) Stop() {
 		f.dispatcherControl <- dispatcherAbort
 	}()
 
-	for _, workerControl := range f.workerControl {
+	for _, worker := range f.workers {
 		go func() {
-			workerControl <- workerAbort
+			worker.Abort()
 		}()
 	}
 
@@ -140,9 +132,9 @@ func (f *FileHasher) dispatcher() {
 			// Dispatch to one of the workers.
 		FOR_OUTER2:
 			for {
-				for _, workerIn := range f.workerIn {
+				for _, worker := range f.workers {
 					select {
-					case workerIn <- file:
+					case worker.In <- file:
 						break FOR_OUTER2
 					default:
 						continue
@@ -156,15 +148,47 @@ func (f *FileHasher) dispatcher() {
 }
 
 func (f *FileHasher) spawnWorker() {
-	workerIn := make(chan string)
-	workerControl := make(chan int)
-	f.workerIn = append(f.workerIn, workerIn)
-	f.workerControl = append(f.workerControl, workerControl)
-	go f.worker(workerIn, f.out, workerControl)
+	w, _ := NewWorker(f.out)
+	f.workers = append(f.workers, w)
+}
+
+type worker struct {
+	In      chan<- string
+	control chan int
+	Out     <-chan *Result
+}
+
+const (
+	workerPause = iota
+	workerResume
+	workerAbort
+)
+
+func NewWorker(out chan<- *Result) (w *worker, err error) {
+	w = new(worker)
+
+	In := make(chan string)
+	w.In = In
+	w.control = make(chan int)
+
+	go w.work(In, out, w.control)
+	return w, nil
+}
+
+func (w *worker) Pause() {
+	w.control <- workerPause
+}
+
+func (w *worker) Resume() {
+	w.control <- workerResume
+}
+
+func (w *worker) Abort() {
+	w.control <- workerAbort
 }
 
 // goroutine
-func (f *FileHasher) worker(in <-chan string, out chan<- *Result, control <-chan int) {
+func (w *worker) work(in <-chan string, out chan<- *Result, control <-chan int) {
 	for {
 	SELECT_OUTER:
 		select {
