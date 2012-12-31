@@ -1,3 +1,4 @@
+// Copyright (C) 2012 Robert Nitsch
 package main
 
 import (
