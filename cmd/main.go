@@ -24,6 +24,7 @@ func main() {
 
 	hasher.Start()
 
+	log.Printf("Starting hashing.")
 	for i := 1; i < len(os.Args); i++ {
 		hasher.Request(os.Args[i])
 	}
