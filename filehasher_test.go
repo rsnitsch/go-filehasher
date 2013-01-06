@@ -1,4 +1,5 @@
-// Copyright (C) 2012 Robert Nitsch
+// Copyright (C) 2012-2013 Robert Nitsch
+// Licensed according to GPL v3.
 package filehasher
 
 import (
