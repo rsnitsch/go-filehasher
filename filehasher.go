@@ -84,7 +84,7 @@ func (f *FileHasher) Stop() {
 
 	for _, worker := range f.workers {
 		go func() {
-			worker.Abort()
+			worker.Stop()
 		}()
 	}
 
@@ -149,30 +149,44 @@ func (f *FileHasher) dispatcher() {
 
 func (f *FileHasher) spawnWorker() {
 	w, _ := NewWorker(f.out)
+	w.Start()
 	f.workers = append(f.workers, w)
 }
 
 type worker struct {
-	In      chan<- string
-	control chan int
-	Out     <-chan *Result
+	In       chan string
+	file     string // File currently being processed.
+	chunks   chan []byte
+	control  chan int
+	control2 chan int
+	out      chan *Result
 }
 
 const (
 	workerPause = iota
 	workerResume
 	workerAbort
+	workerReset
+	workerEOF
 )
 
-func NewWorker(out chan<- *Result) (w *worker, err error) {
+func NewWorker(out chan *Result) (w *worker, err error) {
 	w = new(worker)
 
-	In := make(chan string)
-	w.In = In
+	w.out = out
+
+	w.In = make(chan string)
 	w.control = make(chan int)
 
-	go w.work(In, out, w.control)
+	w.chunks = make(chan []byte)
+	w.control2 = make(chan int)
+
 	return w, nil
+}
+
+func (w *worker) Start() {
+	go w.read(w.In, w.control, w.chunks, w.control2)
+	go w.hash(w.chunks, w.control2, w.out)
 }
 
 func (w *worker) Pause() {
@@ -183,96 +197,124 @@ func (w *worker) Resume() {
 	w.control <- workerResume
 }
 
-func (w *worker) Abort() {
+func (w *worker) Stop() {
 	w.control <- workerAbort
 }
 
-// goroutine
-func (w *worker) work(in <-chan string, out chan<- *Result, control <-chan int) {
+// goroutine consuming file paths and sending the files' contents
+func (w *worker) read(in <-chan string, inControl <-chan int, out chan<- []byte, outControl chan<- int) {
 	for {
-	SELECT_OUTER:
+	SELECT:
 		select {
-		case c, ok := <-control:
-			if !ok {
-				log.Printf("Worker quit due to control channel being closed.")
+		case c := <-inControl:
+			// Propagate control signal first.
+			outControl <- c
+
+			if c == workerPause {
+				log.Printf("Worker paused.")
+
+			FOR_PAUSE:
+				for {
+					select {
+					case c := <-inControl:
+						if c == workerResume {
+							log.Printf("Worker resumed.")
+							break FOR_PAUSE
+						} else if c == workerAbort {
+							log.Printf("Worker abort (while paused).")
+							return
+						}
+					}
+				}
+			} else if c == workerAbort {
+				log.Printf("Worker abort (while idle).")
 				return
 			}
-
-			if c == workerAbort {
-				log.Printf("Worker abort.")
-				return
-			} else {
-				log.Printf("Worker quit due to invalid control signal.")
-				return
-			}
-		case file, ok := <-in:
-			if !ok {
-				log.Printf("Worker quit due to input channel being closed.")
-				return
-			}
-
-			log.Printf("Hashing started for %s", file)
-
+		case file := <-in:
 			fh_raw, err := os.Open(file)
 			if err != nil {
-				out <- &Result{file, nil, err}
-				log.Printf("Worker: os.Open failed.")
-				break SELECT_OUTER
+				w.out <- &Result{file, nil, err}
+				log.Printf("Worker.read: os.Open failed.")
+				break SELECT
 			}
+
+			w.file = file
+			outControl <- workerReset
 
 			fh := bufio.NewReader(fh_raw)
 
-			h := sha1.New()
-			p := make([]byte, 4096*1024)
+			i := 0
+			buffers := make([][]byte, 2)
+			buffers[0] = make([]byte, 4096*1024)
+			buffers[1] = make([]byte, 4096*1024)
 			for {
+				p := buffers[i%2]
 				n, err := fh.Read(p)
 				if n == 0 || err == io.EOF {
+					outControl <- workerEOF
 					break
 				}
 
 				if err != nil {
-					out <- &Result{file, nil, err}
-					log.Printf("Worker: fh.Read() failed.")
-					break SELECT_OUTER
+					w.out <- &Result{file, nil, err}
+					log.Printf("Worker.read: fh.Read failed.")
+					outControl <- workerReset
+					break SELECT
 				}
 
-				h.Write(p[:n])
+				out <- p[:n]
+				i++
 
 				// Check if pause has been requested.
 				select {
-				case c, ok := <-control:
-					if !ok {
-						log.Printf("Worker quit (while hashing) due to control channel being closed.")
-						return
-					}
+				case c := <-inControl:
+					// Propagate control signal first.
+					outControl <- c
 
 					if c == workerPause {
 						log.Printf("Worker paused.")
 
-					FOR:
+					FOR_PAUSE2:
 						for {
 							select {
-							case c, ok := <-control:
-								if !ok {
-									log.Printf("Worker quit (while paused) due to control channel being closed.")
-									return
-								}
-
+							case c := <-inControl:
 								if c == workerResume {
 									log.Printf("Worker resumed.")
-									break FOR
+									break FOR_PAUSE2
 								} else if c == workerAbort {
 									log.Printf("Worker abort (while paused).")
 									return
 								}
 							}
 						}
+					} else if c == workerAbort {
+						log.Printf("Worker abort (while busy).")
+						return
 					}
 				default:
 				}
 			}
+		}
+	}
+}
 
-			out <- &Result{file, h.Sum(nil), nil}
+// goroutine consuming files' contents and sending hashes
+func (w *worker) hash(in <-chan []byte, inControl <-chan int, out chan<- *Result) {
+FOR:
+	h := sha1.New()
+	for {
+		select {
+		case c := <-inControl:
+			if c == workerEOF {
+				w.out <- &Result{w.file, h.Sum(nil), nil}
+				goto FOR
+			} else if c == workerReset {
+				goto FOR
+			} else if c == workerAbort {
+				return
+			}
+		case chunk := <-in:
+			h.Write(chunk)
 		}
 	}
 }
