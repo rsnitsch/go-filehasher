@@ -3,7 +3,7 @@
 package main
 
 import (
-	"bitbucket.org/r_nitsch/filehasher"
+	"bitbucket.org/rsnitsch/filehasher"
 	"log"
 	"os"
 	"time"
