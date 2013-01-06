@@ -5,6 +5,7 @@ package filehasher
 import (
 	"bufio"
 	"crypto/sha1"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -27,9 +28,7 @@ type FileHasher struct {
 }
 
 const (
-	dispatcherPause = iota
-	dispatcherResume
-	dispatcherAbort
+	dispatcherAbort = iota
 )
 
 func NewFileHasher() (f *FileHasher, err error) {
@@ -43,7 +42,9 @@ func NewFileHasher() (f *FileHasher, err error) {
 }
 
 func (f *FileHasher) Request(file string) {
-	f.in <- file
+	if f.isRunning {
+		f.in <- file
+	}
 }
 
 func (f *FileHasher) Start() {
@@ -55,10 +56,6 @@ func (f *FileHasher) Start() {
 }
 
 func (f *FileHasher) Pause() {
-	go func() {
-		f.dispatcherControl <- dispatcherPause
-	}()
-
 	for _, worker := range f.workers {
 		go func() {
 			worker.Pause()
@@ -67,10 +64,6 @@ func (f *FileHasher) Pause() {
 }
 
 func (f *FileHasher) Resume() {
-	go func() {
-		f.dispatcherControl <- dispatcherResume
-	}()
-
 	for _, worker := range f.workers {
 		go func() {
 			worker.Resume()
@@ -97,6 +90,7 @@ func (f *FileHasher) GetResult() (r *Result) {
 }
 
 func (f *FileHasher) dispatcher() {
+	queue := make([]string, 0)
 	for {
 		select {
 		case c, ok := <-f.dispatcherControl:
@@ -105,45 +99,32 @@ func (f *FileHasher) dispatcher() {
 				return
 			}
 
-			if c == dispatcherPause {
-				log.Printf("Dispatcher paused.")
-			FOR_OUTER1:
-				for {
-					select {
-					case c, ok := <-f.dispatcherControl:
-						if !ok {
-							log.Printf("Dispatcher quit due to dispatcherControl being closed.")
-							return
-						}
-
-						if c == dispatcherResume {
-							log.Printf("Dispatcher resumed.")
-							break FOR_OUTER1
-						} else if c == dispatcherAbort {
-							log.Printf("Dispatcher abort.")
-							return
-						}
-					}
-				}
-			} else if c == dispatcherAbort {
+			if c == dispatcherAbort {
 				log.Printf("Dispatcher abort.")
 				return
+			} else {
+				panic(fmt.Errorf("Dispatcher received unknown control signal."))
 			}
 		case file := <-f.in:
-			// Dispatch to one of the workers.
-		FOR_OUTER2:
-			for {
+			queue = append(queue, file)
+		default:
+			if len(queue) > 0 {
+				file := queue[0]
+
+				// Dispatch to one of the workers.
+			FOR_OUTER2:
 				for _, worker := range f.workers {
 					select {
 					case worker.In <- file:
+						queue = queue[1:]
 						break FOR_OUTER2
 					default:
 						continue
 					}
 				}
-
-				time.Sleep(5 * time.Millisecond)
 			}
+
+			time.Sleep(5 * time.Millisecond)
 		}
 	}
 }
