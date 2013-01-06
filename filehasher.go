@@ -252,6 +252,7 @@ func (w *worker) read(in <-chan string, inControl <-chan int, out chan<- []byte,
 				p := buffers[i%2]
 				n, err := fh.Read(p)
 				if n == 0 || err == io.EOF {
+					fh_raw.Close()
 					outControl <- workerEOF
 					break
 				}
@@ -259,6 +260,7 @@ func (w *worker) read(in <-chan string, inControl <-chan int, out chan<- []byte,
 				if err != nil {
 					w.out <- &Result{file, nil, err}
 					log.Printf("Worker.read: fh.Read failed.")
+					fh_raw.Close()
 					outControl <- workerReset
 					break SELECT
 				}
@@ -284,12 +286,14 @@ func (w *worker) read(in <-chan string, inControl <-chan int, out chan<- []byte,
 									break FOR_PAUSE2
 								} else if c == workerAbort {
 									log.Printf("Worker abort (while paused).")
+									fh_raw.Close()
 									return
 								}
 							}
 						}
 					} else if c == workerAbort {
 						log.Printf("Worker abort (while busy).")
+						fh_raw.Close()
 						return
 					}
 				default:
