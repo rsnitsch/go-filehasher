@@ -27,7 +27,7 @@ License
 
 Note: If you need a more permissive license, feel free to contact me.
 
-> Copyright (C) 2012 Robert Nitsch
+> Copyright (C) 2012-2013 Robert Nitsch
 > 
 > This program is free software: you can redistribute it and/or modify
 > it under the terms of the GNU General Public License as published by
