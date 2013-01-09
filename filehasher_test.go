@@ -26,17 +26,13 @@ func TestHash(t *testing.T) {
 
 	// Collect results.
 	for _ = range wants {
-		result, err := hasher.GetResultHash()
+		file, hash, err := hasher.GetResultHash()
 
 		if err != nil {
-			t.Errorf("GetResultHash() should succeed, because the sink provided *does* implement the hash.Hash interface.")
+			t.Errorf("Error occured while hashing '%s': %s", file, err.Error())
 		}
 
-		if result.Err != nil {
-			t.Errorf("Error occured while hashing '%s': %s", result.File, result.Err.Error())
-		}
-
-		haves[result.File] = fmt.Sprintf("%x", result.Hash)
+		haves[file] = fmt.Sprintf("%x", hash)
 	}
 
 	// Verify results.
