@@ -4,8 +4,8 @@ package filehasher
 
 import (
 	"bufio"
-	"crypto/sha1"
 	"fmt"
+	"hash"
 	"io"
 	"log"
 	"os"
@@ -14,12 +14,23 @@ import (
 
 type Result struct {
 	File string
+	Sink io.Writer
+	Err  error
+}
+
+type ResultHash struct {
+	File string
 	Hash []byte
 	Err  error
 }
 
+type request struct {
+	File string
+	Sink io.Writer
+}
+
 type FileHasher struct {
-	in                chan string
+	in                chan *request
 	out               chan *Result
 	isRunning         bool
 	workers           []*worker
@@ -33,7 +44,7 @@ const (
 
 func NewFileHasher() (f *FileHasher, err error) {
 	f = new(FileHasher)
-	f.in = make(chan string)
+	f.in = make(chan *request)
 	f.out = make(chan *Result)
 	f.workers = make([]*worker, 0)
 	f.dispatcherControl = make(chan int)
@@ -41,9 +52,9 @@ func NewFileHasher() (f *FileHasher, err error) {
 	return f, nil
 }
 
-func (f *FileHasher) Request(file string) {
+func (f *FileHasher) Request(file string, sink io.Writer) {
 	if f.isRunning {
-		f.in <- file
+		f.in <- &request{file, sink}
 	}
 }
 
@@ -89,8 +100,18 @@ func (f *FileHasher) GetResult() (r *Result) {
 	return <-f.out
 }
 
+func (f *FileHasher) GetResultHash() (r *ResultHash, err error) {
+	result := <-f.out
+	h, ok := result.Sink.(hash.Hash)
+	if !ok {
+		return nil, fmt.Errorf("Your sink does not implement the hash.Hash interface. Use GetResult().")
+	}
+
+	return &ResultHash{result.File, h.Sum(nil), result.Err}, err
+}
+
 func (f *FileHasher) dispatcher() {
-	queue := make([]string, 0)
+	queue := make([]*request, 0)
 	for {
 		select {
 		case c, ok := <-f.dispatcherControl:
@@ -105,17 +126,17 @@ func (f *FileHasher) dispatcher() {
 			} else {
 				panic(fmt.Errorf("Dispatcher received unknown control signal."))
 			}
-		case file := <-f.in:
-			queue = append(queue, file)
+		case request := <-f.in:
+			queue = append(queue, request)
 		default:
 			if len(queue) > 0 {
-				file := queue[0]
+				request := queue[0]
 
 				// Dispatch to one of the workers.
 			FOR_OUTER2:
 				for _, worker := range f.workers {
 					select {
-					case worker.In <- file:
+					case worker.In <- request:
 						queue = queue[1:]
 						break FOR_OUTER2
 					default:
@@ -136,8 +157,8 @@ func (f *FileHasher) spawnWorker() {
 }
 
 type worker struct {
-	In       chan string
-	file     string // File currently being processed.
+	In       chan *request
+	request  *request // Request currently being processed.
 	chunks   chan []byte
 	control  chan int
 	control2 chan int
@@ -148,7 +169,6 @@ const (
 	workerPause = iota
 	workerResume
 	workerAbort
-	workerReset
 	workerEOF
 )
 
@@ -157,7 +177,7 @@ func NewWorker(out chan *Result) (w *worker, err error) {
 
 	w.out = out
 
-	w.In = make(chan string)
+	w.In = make(chan *request)
 	w.control = make(chan int)
 
 	w.chunks = make(chan []byte)
@@ -184,7 +204,7 @@ func (w *worker) Stop() {
 }
 
 // goroutine consuming file paths and sending the files' contents
-func (w *worker) read(in <-chan string, inControl <-chan int, out chan<- []byte, outControl chan<- int) {
+func (w *worker) read(in <-chan *request, inControl <-chan int, out chan<- []byte, outControl chan<- int) {
 	for {
 	SELECT:
 		select {
@@ -204,6 +224,7 @@ func (w *worker) read(in <-chan string, inControl <-chan int, out chan<- []byte,
 							break FOR_PAUSE
 						} else if c == workerAbort {
 							log.Printf("Worker abort (while paused).")
+							w.request = nil
 							return
 						}
 					}
@@ -212,16 +233,15 @@ func (w *worker) read(in <-chan string, inControl <-chan int, out chan<- []byte,
 				log.Printf("Worker abort (while idle).")
 				return
 			}
-		case file := <-in:
-			fh_raw, err := os.Open(file)
+		case request := <-in:
+			fh_raw, err := os.Open(request.File)
 			if err != nil {
-				w.out <- &Result{file, nil, err}
+				w.out <- &Result{request.File, nil, err}
 				log.Printf("Worker.read: os.Open failed.")
 				break SELECT
 			}
 
-			w.file = file
-			outControl <- workerReset
+			w.request = request
 
 			fh := bufio.NewReader(fh_raw)
 
@@ -239,10 +259,9 @@ func (w *worker) read(in <-chan string, inControl <-chan int, out chan<- []byte,
 				}
 
 				if err != nil {
-					w.out <- &Result{file, nil, err}
+					w.out <- &Result{request.File, nil, err}
 					log.Printf("Worker.read: fh.Read failed.")
 					fh_raw.Close()
-					outControl <- workerReset
 					break SELECT
 				}
 
@@ -268,6 +287,7 @@ func (w *worker) read(in <-chan string, inControl <-chan int, out chan<- []byte,
 								} else if c == workerAbort {
 									log.Printf("Worker abort (while paused).")
 									fh_raw.Close()
+									w.request = nil
 									return
 								}
 							}
@@ -275,6 +295,7 @@ func (w *worker) read(in <-chan string, inControl <-chan int, out chan<- []byte,
 					} else if c == workerAbort {
 						log.Printf("Worker abort (while busy).")
 						fh_raw.Close()
+						w.request = nil
 						return
 					}
 				default:
@@ -286,21 +307,17 @@ func (w *worker) read(in <-chan string, inControl <-chan int, out chan<- []byte,
 
 // goroutine consuming files' contents and sending hashes
 func (w *worker) hash(in <-chan []byte, inControl <-chan int, out chan<- *Result) {
-FOR:
-	h := sha1.New()
 	for {
 		select {
 		case c := <-inControl:
 			if c == workerEOF {
-				w.out <- &Result{w.file, h.Sum(nil), nil}
-				goto FOR
-			} else if c == workerReset {
-				goto FOR
+				w.out <- &Result{w.request.File, w.request.Sink, nil}
+				break
 			} else if c == workerAbort {
 				return
 			}
 		case chunk := <-in:
-			h.Write(chunk)
+			w.request.Sink.Write(chunk)
 		}
 	}
 }
