@@ -22,6 +22,11 @@ I started filehasher mainly for two reasons:
 
 I am also going to request a code review to get the most from the project.
 
+State
+-----
+
+The exported interface is not yet stable. Major changes are to be expected.
+
 License
 -------
 
