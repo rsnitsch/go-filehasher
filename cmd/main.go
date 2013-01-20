@@ -4,6 +4,7 @@ package main
 
 import (
 	"bitbucket.org/rsnitsch/filehasher"
+	"crypto/sha1"
 	"log"
 	"os"
 	"time"
@@ -27,16 +28,16 @@ func main() {
 
 	log.Printf("Starting hashing.")
 	for i := 1; i < len(os.Args); i++ {
-		hasher.Request(os.Args[i])
+		hasher.Request(os.Args[i], sha1.New())
 	}
 
 	for i := 1; i < len(os.Args); i++ {
-		result := hasher.GetResult()
-		if (*result).Err != nil {
-			log.Fatalf("Hashing failed: " + result.Err.Error())
-			return
+		file, hash, err := hasher.GetResultHash()
+		if err != nil {
+			log.Fatalf("File '%s' - Hashing failed: %s", file, err.Error())
+			continue
 		}
 
-		log.Printf("Hash is: %x", result.Hash)
+		log.Printf("File '%s' - Hash is: %x", file, hash)
 	}
 }
