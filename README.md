@@ -4,23 +4,26 @@ filehasher
 About
 -----
 
-This package allows for asynchronous hashing of files: The hashing of certain
-files can be requested at any time and you can wait for the result.
+This package allows for asynchronous hashing of files.
 
-The hashing can be paused or stopped at any time.
+Goals
+-----
 
-Internally the overall performance is maximized, i.e. by hashing files from different
-physical devices in parallel (TODO).
+These are the original goals of the project:
 
-Motivation
-----------
+* Learn about Go and its concurrency idioms by working on a simple software project that involves parallel computing.
+* Ideally, the resulting software can be reused in other projects.
 
-I started filehasher mainly for two reasons:
+Requirements
+------------
 
-* I need the functionality in another project of mine, f2fshare
-* I wanted to get used to Go's concurrency idioms by working on a relatively simple project
-
-I am also going to request a code review to get the most from the project.
+* the library/application is for hashing files (e.g. SHA1).
+* the interface should support that the caller specify the type of hash function.
+* the application should be able to do I/O and hashing in parallel to optimize the overall performance.
+* it should be possible to pause/resume the hashing at any time.
+* it should also be possible to shutdown the concurrent go routines completely at any time (not just pause them).
+* later it should be possible to implement advanced optimizations like hashing files from different physical devices in parallel.
+* it should be possible to queue files for hashing at any time.
 
 State
 -----
