@@ -28,12 +28,17 @@ type FileHasher struct {
 	out               chan *result
 	isRunning         bool
 	workers           []*worker
-	dispatcherControl chan int
+	dispatcherControl chan Signal
 	Err               error
 }
 
+type Signal int
+
 const (
-	dispatcherAbort = iota
+	SIGNAL_PAUSE = Signal(iota)
+	SIGNAL_RESUME
+	SIGNAL_ABORT
+	SIGNAL_EOF
 )
 
 func NewFileHasher() (f *FileHasher, err error) {
@@ -41,7 +46,7 @@ func NewFileHasher() (f *FileHasher, err error) {
 	f.in = make(chan *request)
 	f.out = make(chan *result)
 	f.workers = make([]*worker, 0)
-	f.dispatcherControl = make(chan int)
+	f.dispatcherControl = make(chan Signal)
 
 	return f, nil
 }
@@ -82,7 +87,7 @@ func (f *FileHasher) Resume() {
 
 func (f *FileHasher) Stop() {
 	go func() {
-		f.dispatcherControl <- dispatcherAbort
+		f.dispatcherControl <- SIGNAL_ABORT
 	}()
 
 	for _, worker := range f.workers {
@@ -119,7 +124,7 @@ func (f *FileHasher) dispatcher() {
 				return
 			}
 
-			if c == dispatcherAbort {
+			if c == SIGNAL_ABORT {
 				log.Printf("Dispatcher abort.")
 				return
 			} else {
@@ -159,17 +164,10 @@ type worker struct {
 	In       chan *request
 	request  *request // Request currently being processed.
 	chunks   chan []byte
-	control  chan int
-	control2 chan int
+	control  chan Signal
+	control2 chan Signal
 	out      chan *result
 }
-
-const (
-	workerPause = iota
-	workerResume
-	workerAbort
-	workerEOF
-)
 
 func NewWorker(out chan *result) (w *worker, err error) {
 	w = new(worker)
@@ -177,10 +175,10 @@ func NewWorker(out chan *result) (w *worker, err error) {
 	w.out = out
 
 	w.In = make(chan *request)
-	w.control = make(chan int)
+	w.control = make(chan Signal)
 
 	w.chunks = make(chan []byte)
-	w.control2 = make(chan int)
+	w.control2 = make(chan Signal)
 
 	return w, nil
 }
@@ -191,19 +189,19 @@ func (w *worker) Start() {
 }
 
 func (w *worker) Pause() {
-	w.control <- workerPause
+	w.control <- SIGNAL_PAUSE
 }
 
 func (w *worker) Resume() {
-	w.control <- workerResume
+	w.control <- SIGNAL_RESUME
 }
 
 func (w *worker) Stop() {
-	w.control <- workerAbort
+	w.control <- SIGNAL_ABORT
 }
 
 // goroutine consuming file paths and sending the files' contents
-func (w *worker) read(in <-chan *request, inControl <-chan int, out chan<- []byte, outControl chan<- int) {
+func (w *worker) read(in <-chan *request, inControl <-chan Signal, out chan<- []byte, outControl chan<- Signal) {
 	for {
 	SELECT:
 		select {
@@ -211,24 +209,24 @@ func (w *worker) read(in <-chan *request, inControl <-chan int, out chan<- []byt
 			// Propagate control signal first.
 			outControl <- c
 
-			if c == workerPause {
+			if c == SIGNAL_PAUSE {
 				log.Printf("Worker paused.")
 
 			FOR_PAUSE:
 				for {
 					select {
 					case c := <-inControl:
-						if c == workerResume {
+						if c == SIGNAL_RESUME {
 							log.Printf("Worker resumed.")
 							break FOR_PAUSE
-						} else if c == workerAbort {
+						} else if c == SIGNAL_ABORT {
 							log.Printf("Worker abort (while paused).")
 							w.request = nil
 							return
 						}
 					}
 				}
-			} else if c == workerAbort {
+			} else if c == SIGNAL_ABORT {
 				log.Printf("Worker abort (while idle).")
 				return
 			}
@@ -253,7 +251,7 @@ func (w *worker) read(in <-chan *request, inControl <-chan int, out chan<- []byt
 				n, err := fh.Read(p)
 				if n == 0 || err == io.EOF {
 					fh_raw.Close()
-					outControl <- workerEOF
+					outControl <- SIGNAL_EOF
 					break
 				}
 
@@ -273,17 +271,17 @@ func (w *worker) read(in <-chan *request, inControl <-chan int, out chan<- []byt
 					// Propagate control signal first.
 					outControl <- c
 
-					if c == workerPause {
+					if c == SIGNAL_PAUSE {
 						log.Printf("Worker paused.")
 
 					FOR_PAUSE2:
 						for {
 							select {
 							case c := <-inControl:
-								if c == workerResume {
+								if c == SIGNAL_RESUME {
 									log.Printf("Worker resumed.")
 									break FOR_PAUSE2
-								} else if c == workerAbort {
+								} else if c == SIGNAL_ABORT {
 									log.Printf("Worker abort (while paused).")
 									fh_raw.Close()
 									w.request = nil
@@ -291,7 +289,7 @@ func (w *worker) read(in <-chan *request, inControl <-chan int, out chan<- []byt
 								}
 							}
 						}
-					} else if c == workerAbort {
+					} else if c == SIGNAL_ABORT {
 						log.Printf("Worker abort (while busy).")
 						fh_raw.Close()
 						w.request = nil
@@ -305,14 +303,14 @@ func (w *worker) read(in <-chan *request, inControl <-chan int, out chan<- []byt
 }
 
 // goroutine consuming files' contents and sending hashes
-func (w *worker) hash(in <-chan []byte, inControl <-chan int, out chan<- *result) {
+func (w *worker) hash(in <-chan []byte, inControl <-chan Signal, out chan<- *result) {
 	for {
 		select {
 		case c := <-inControl:
-			if c == workerEOF {
+			if c == SIGNAL_EOF {
 				w.out <- &result{w.request.File, w.request.Sink, nil}
 				break
-			} else if c == workerAbort {
+			} else if c == SIGNAL_ABORT {
 				return
 			}
 		case chunk := <-in:
