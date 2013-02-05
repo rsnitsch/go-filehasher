@@ -10,6 +10,13 @@ import os
 import random
 import sys
 
+def write_random_data(file, size, progress_callback=None):
+    for i in range(size):
+        file.write(bytes([random.randint(0, 255)]))
+
+        if progress_callback is not None and i % 2**18 == 0:
+            progress_callback(i)
+
 def main(argv):
     parser = argparse.ArgumentParser(description="Generate files filled with random data")
     parser.add_argument("target", help="The target file")
@@ -30,11 +37,8 @@ def main(argv):
         return 1
 
     with open(args.target, "w+b") as fh:
-        for i in range(args.size):
-            fh.write(bytes([random.randint(0, 255)]))
+        write_random_data(fh, args.size, lambda i: print("\r%d / %d done (%.2f%%)" % (i, args.size, float(i)/args.size*100), end=""))
 
-            if i % 2**18 == 0:
-                print("\r%d / %d done (%.2f%%)" % (i, args.size, float(i)/args.size*100), end="")
     print("\rTarget file generation has completed.")
 
 if __name__ == "__main__":
