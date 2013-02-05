@@ -7,15 +7,18 @@ Licensed according to GPL v3.
 """
 import argparse
 import os
-import random
 import sys
 
 def write_random_data(file, size, progress_callback=None):
-    for i in range(size):
-        file.write(bytes([random.randint(0, 255)]))
+    remaining = size
+    while remaining > 0:
+        n = min(remaining, 2**18)
+        random_data = os.urandom(n)
+        file.write(random_data)
+        remaining = remaining - n
 
-        if progress_callback is not None and i % 2**18 == 0:
-            progress_callback(i)
+        if progress_callback is not None:
+            progress_callback(size - remaining)
 
 def main(argv):
     parser = argparse.ArgumentParser(description="Generate files filled with random data")
